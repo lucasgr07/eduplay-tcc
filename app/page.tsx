@@ -34,6 +34,7 @@ export default function EduPlayApp() {
   ]);
 
   // Estados do Aluno / Multiplayer
+  const [studentId, setStudentId] = useState("");
   const [studentName, setStudentName] = useState("");
   const [roomPin, setRoomPin] = useState("");
   const [playersList, setPlayersList] = useState<any[]>([]);
@@ -43,6 +44,7 @@ export default function EduPlayApp() {
   const [score, setScore] = useState(0);
   const [timeLeft, setTimeLeft] = useState(30);
   const [gameActive, setGameActive] = useState(false);
+  const [hasAnswered, setHasAnswered] = useState(false); // Trava para evitar múltiplas respostas
 
   useEffect(() => {
     fetchQuizzes();
@@ -91,13 +93,13 @@ export default function EduPlayApp() {
   // Cronômetro Regressivo do Jogo
   useEffect(() => {
     let timer: any;
-    if (gameActive && timeLeft > 0) {
+    if (gameActive && timeLeft > 0 && !hasAnswered) {
       timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
-    } else if (gameActive && timeLeft === 0) {
+    } else if (gameActive && timeLeft === 0 && !hasAnswered) {
       handleTimeOut();
     }
     return () => clearTimeout(timer);
-  }, [timeLeft, gameActive]);
+  }, [timeLeft, gameActive, hasAnswered]);
 
   // ==========================================
   // FUNÇÕES DO PROFESSOR (CRUD)
@@ -199,8 +201,11 @@ export default function EduPlayApp() {
     const roomData = roomSnap.data();
     if (roomData.status !== "LOBBY") return alert("O jogo já começou!");
 
-    const newPlayer = { id: Math.random().toString(), name: studentName, score: 0 };
-    const updatedPlayers = [...roomData.players, newPlayer];
+    const generatedId = "p_" + Math.random().toString(36).substring(2, 9);
+    setStudentId(generatedId);
+    
+    const newPlayer = { id: generatedId, name: studentName, score: 0 };
+    const updatedPlayers = [...(roomData.players || []), newPlayer];
 
     await updateDoc(roomRef, { players: updatedPlayers });
 
@@ -211,7 +216,7 @@ export default function EduPlayApp() {
 
     setScreen("student-waiting");
 
-    // Monitora o início da partida e mudanças de status em tempo real
+    // Monitoramento constante e síncrono para os alunos
     onSnapshot(roomRef, (snapshot) => {
       const data = snapshot.data();
       if (data) {
@@ -240,9 +245,21 @@ export default function EduPlayApp() {
     leaveRoom();
   };
 
-  const leaveRoom = () => {
+  const leaveRoom = async () => {
+    if (roomPin && studentId) {
+      try {
+        const roomRef = doc(db, "rooms", roomPin);
+        const roomSnap = await getDoc(roomRef);
+        if (roomSnap.exists()) {
+          const players = roomSnap.data().players || [];
+          const filtered = players.filter((p: any) => p.id !== studentId);
+          await updateDoc(roomRef, { players: filtered });
+        }
+      } catch (e) {}
+    }
     setRoomPin("");
     setStudentName("");
+    setStudentId("");
     setScreen("home");
   };
 
@@ -254,12 +271,16 @@ export default function EduPlayApp() {
     setCurrentQIndex(0);
     setScore(0);
     setTimeLeft(selectedQuiz.rules.time || 30);
+    setHasAnswered(false);
     setGameActive(true);
     setScreen("game-play");
   };
 
   const handleAnswer = async (index: number) => {
+    if (hasAnswered) return; // Impede cliques múltiplos
+    setHasAnswered(true);
     setGameActive(false);
+
     const q = selectedQuiz.questions[currentQIndex];
     let newScore = score;
 
@@ -282,7 +303,7 @@ export default function EduPlayApp() {
         const roomSnap = await getDoc(roomRef);
         if (roomSnap.exists()) {
           const players = roomSnap.data().players || [];
-          const updated = players.map((p: any) => p.name === studentName ? { ...p, score: newScore } : p);
+          const updated = players.map((p: any) => p.id === studentId ? { ...p, score: newScore } : p);
           await updateDoc(roomRef, { players: updated });
         }
       } catch (e) {}
@@ -292,6 +313,7 @@ export default function EduPlayApp() {
       if (currentQIndex < selectedQuiz.questions.length - 1) {
         setCurrentQIndex(currentQIndex + 1);
         setTimeLeft(selectedQuiz.rules.time || 30);
+        setHasAnswered(false);
         setGameActive(true);
       } else {
         setScreen("game-finished");
@@ -300,12 +322,16 @@ export default function EduPlayApp() {
   };
 
   const handleTimeOut = () => {
+    if (hasAnswered) return;
+    setHasAnswered(true);
     setGameActive(false);
     playSound('lose');
+
     setTimeout(() => {
       if (currentQIndex < selectedQuiz.questions.length - 1) {
         setCurrentQIndex(currentQIndex + 1);
         setTimeLeft(selectedQuiz.rules.time || 30);
+        setHasAnswered(false);
         setGameActive(true);
       } else {
         setScreen("game-finished");
@@ -380,10 +406,17 @@ export default function EduPlayApp() {
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "15px" }}>
               {selectedQuiz.questions[currentQIndex].options.map((opt: string, idx: number) => (
-                <button key={idx} style={{
-                  padding: "20px", fontSize: "1.1rem", fontWeight: "bold", borderRadius: "15px",
-                  border: "3px solid #D1D5DB", background: isDarkMode ? "#374151" : "#F3F4F6", color: isDarkMode ? "#FFF" : "#000", cursor: "pointer"
-                }} onClick={() => handleAnswer(idx)}>
+                <button 
+                  key={idx} 
+                  disabled={hasAnswered}
+                  style={{
+                    padding: "20px", fontSize: "1.1rem", fontWeight: "bold", borderRadius: "15px",
+                    border: "3px solid #D1D5DB", background: isDarkMode ? "#374151" : "#F3F4F6", 
+                    color: isDarkMode ? "#FFF" : "#000", cursor: hasAnswered ? "not-allowed" : "pointer",
+                    opacity: hasAnswered ? 0.6 : 1
+                  }} 
+                  onClick={() => handleAnswer(idx)}
+                >
                   {String.fromCharCode(65 + idx)}) {opt}
                 </button>
               ))}
