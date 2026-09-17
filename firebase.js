@@ -1,7 +1,7 @@
-// Importa as funções necessárias do Firebase
-import { initializeApp } from "firebase/app";
+import { getApps, initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
+// Substitua com as suas credenciais reais do Firebase se necessário
 const firebaseConfig = {
   apiKey: "AIzaSyDmB57KvZJGpPiUj9GbAfUCtduNlkK7_nY",
   authDomain: "eduplay-tcc.firebaseapp.com",
@@ -11,8 +11,5 @@ const firebaseConfig = {
   appId: "1:574631222893:web:4065103d26e78efe492964"
 };
 
-// Inicializa o aplicativo do Firebase
-const app = initializeApp(firebaseConfig);
-
-// Inicializa o banco de dados (Firestore) e exporta para usarmos no resto do TCC
+const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
 export const db = getFirestore(app);

@@ -1,317 +1,548 @@
 "use client";
 import confetti from "canvas-confetti";
-import { addDoc, collection, deleteDoc, doc, getDocs } from "firebase/firestore";
-import { FormEvent, useEffect, useState } from "react";
+import {
+  addDoc,
+  collection,
+  deleteDoc, doc,
+  getDoc,
+  getDocs,
+  onSnapshot, setDoc,
+  updateDoc
+} from "firebase/firestore";
+import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 
-interface Pergunta {
-  pergunta: string;
-  opcoes: string[];
-  correta: number;
-}
+export default function EduPlayApp() {
+  // Estados de Navegação e Configurações
+  const [screen, setScreen] = useState("home");
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isUppercase, setIsUppercase] = useState(false);
+  const [fontSize, setFontSize] = useState("1.1rem");
+  const [accessMenuOpen, setAccessMenuOpen] = useState(false);
 
-interface Quiz {
-  id: string;
-  titulo: string;
-  perguntas: Pergunta[];
-}
-
-export default function Home() {
-  const [telaAtual, setTelaAtual] = useState<string>("home");
-
+  // Estados de Dados (Quizzes e Salas)
+  const [quizzes, setQuizzes] = useState<any[]>([]);
+  const [selectedQuiz, setSelectedQuiz] = useState<any>(null);
+  
   // Estados do Professor (CRUD)
-  const [quizzes, setQuizzes] = useState<Quiz[]>([]);
-  const [tituloQuiz, setTituloQuiz] = useState<string>("");
-  const [pergunta, setPergunta] = useState<string>("");
-  const [opcoes, setOpcoes] = useState<string[]>(["", "", "", ""]);
-  const [correta, setCorreta] = useState<string>("0");
-  const [carregando, setCarregando] = useState<boolean>(false);
+  const [quizId, setQuizId] = useState("");
+  const [quizTitle, setQuizTitle] = useState("");
+  const [ruleTime, setRuleTime] = useState(30);
+  const [rulePoints, setRulePoints] = useState(100);
+  const [ruleBonus, setRuleBonus] = useState(200);
+  const [ruleNoPoints, setRuleNoPoints] = useState(false);
+  const [questions, setQuestions] = useState([
+    { question: "", options: ["", "", "", ""], correct: 0, isBonus: false }
+  ]);
 
-  // Estados do Aluno (Jogo)
-  const [quizSelecionado, setQuizSelecionado] = useState<Quiz | null>(null);
-  const [indicePergunta, setIndicePergunta] = useState<number>(0);
-  const [pontos, setPontos] = useState<number>(0);
-  const [feedback, setFeedback] = useState<string>("");
-  const [fimDoJogo, setFimDoJogo] = useState<boolean>(false);
-  const [animarErro, setAnimarErro] = useState<boolean>(false);
+  // Estados do Aluno / Multiplayer (Salas em Tempo Real)
+  const [studentName, setStudentName] = useState("");
+  const [roomPin, setRoomPin] = useState("");
+  const [currentRoom, setCurrentRoom] = useState<any>(null);
+  const [playersList, setPlayersList] = useState<any[]>([]);
+  
+  // Estados da Gameplay
+  const [currentQIndex, setCurrentQIndex] = useState(0);
+  const [score, setScore] = useState(0);
+  const [timeLeft, setTimeLeft] = useState(30);
+  const [gameActive, setGameActive] = useState(false);
 
-  // Função para buscar os quizzes do Firebase
-  const carregarQuizzes = async () => {
-    setCarregando(true);
+  // Carrega Quizzes do Firestore ao iniciar
+  useEffect(() => {
+    fetchQuizzes();
+  }, []);
+
+  const fetchQuizzes = async () => {
     try {
       const querySnapshot = await getDocs(collection(db, "quizzes"));
-      const listaQuizzes: Quiz[] = [];
-      querySnapshot.forEach((docSnap) => {
-        const dados = docSnap.data();
-        listaQuizzes.push({
-          id: docSnap.id,
-          titulo: dados.titulo,
-          perguntas: dados.perguntas || []
-        });
-      });
-      setQuizzes(listaQuizzes);
-    } catch (error) {
-      console.error("Erro ao carregar: ", error);
+      const loaded = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setQuizzes(loaded);
+    } catch (e) {
+      console.error("Erro ao carregar quizzes", e);
     }
-    setCarregando(false);
   };
 
+  // Cronômetro Regressivo do Jogo
   useEffect(() => {
-    if (telaAtual === "professor" || telaAtual === "selecionar-quiz") {
-      carregarQuizzes();
+    let timer: any;
+    if (gameActive && timeLeft > 0) {
+      timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
+    } else if (gameActive && timeLeft === 0) {
+      handleTimeOut();
     }
-  }, [telaAtual]);
+    return () => clearTimeout(timer);
+  }, [timeLeft, gameActive]);
 
-  // Salvar Quiz
-  const salvarQuiz = async (e: FormEvent) => {
+  // ==========================================
+  // FUNÇÕES DO PROFESSOR (CRUD)
+  // ==========================================
+  const addQuestionField = () => {
+    setQuestions([...questions, { question: "", options: ["", "", "", ""], correct: 0, isBonus: false }]);
+  };
+
+  const updateQuestion = (index: number, field: string, value: any) => {
+    const newQ = [...questions];
+    if (field === "question") newQ[index].question = value;
+    if (field === "correct") newQ[index].correct = parseInt(value);
+    if (field === "isBonus") newQ[index].isBonus = value;
+    setQuestions(newQ);
+  };
+
+  const updateOption = (qIndex: number, optIndex: number, value: string) => {
+    const newQ = [...questions];
+    newQ[qIndex].options[optIndex] = value;
+    setQuestions(newQ);
+  };
+
+  const removeQuestionField = (index: number) => {
+    setQuestions(questions.filter((_, i) => i !== index));
+  };
+
+  const saveQuiz = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!quizTitle || questions.length === 0) return alert("Preencha o título e adicione perguntas!");
+
+    const quizData = {
+      title: quizTitle,
+      rules: { time: Number(ruleTime), points: Number(rulePoints), bonusPoints: Number(ruleBonus), noPoints: ruleNoPoints },
+      questions
+    };
+
     try {
-      await addDoc(collection(db, "quizzes"), {
-        titulo: tituloQuiz,
-        perguntas: [
-          {
-            pergunta: pergunta,
-            opcoes: opcoes,
-            correta: parseInt(correta)
-          }
-        ]
-      });
-      alert("✅ Quiz salvo com sucesso no banco de dados!");
-      setTituloQuiz(""); setPergunta(""); setOpcoes(["", "", "", ""]); setCorreta("0");
-      carregarQuizzes();
-    } catch (error) {
-      console.error("Erro ao salvar: ", error);
-      alert("❌ Ocorreu um erro ao salvar o quiz.");
+      if (quizId) {
+        await updateDoc(doc(db, "quizzes", quizId), quizData);
+      } else {
+        await addDoc(collection(db, "quizzes"), quizData);
+      }
+      resetForm();
+      fetchQuizzes();
+      setScreen("teacher-menu");
+    } catch (err) {
+      console.error("Erro ao salvar:", err);
     }
   };
 
-  // Excluir Quiz
-  const deletarQuiz = async (id: string) => {
-    if (confirm("Tem certeza que deseja excluir este quiz para sempre?")) {
-      try {
-        await deleteDoc(doc(db, "quizzes", id));
-        carregarQuizzes();
-      } catch (error) {
-        console.error("Erro ao deletar: ", error);
+  const resetForm = () => {
+    setQuizId("");
+    setQuizTitle("");
+    setRuleTime(30);
+    setRulePoints(100);
+    setRuleBonus(200);
+    setRuleNoPoints(false);
+    setQuestions([{ question: "", options: ["", "", "", ""], correct: 0, isBonus: false }]);
+  };
+
+  const deleteQuiz = async (id: string) => {
+    if (confirm("Deseja realmente excluir este quiz?")) {
+      await deleteDoc(doc(db, "quizzes", id));
+      fetchQuizzes();
+    }
+  };
+
+  // ==========================================
+  // FUNÇÕES DE SALA E MULTIPLAYER (FIRESTORE)
+  // ==========================================
+  const hostRoom = async (quiz: any) => {
+    const pin = Math.floor(1000 + Math.random() * 9000).toString();
+    const roomData = {
+      pin,
+      quizId: quiz.id,
+      title: quiz.title,
+      status: "LOBBY",
+      players: []
+    };
+    await setDoc(doc(db, "rooms", pin), roomData);
+    setRoomPin(pin);
+    setSelectedQuiz(quiz);
+    setScreen("teacher-lobby");
+
+    // Ouve conexões de alunos em tempo real
+    onSnapshot(doc(db, "rooms", pin), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setPlayersList(data.players || []);
+      }
+    });
+  };
+
+  const joinRoom = async () => {
+    if (!studentName || !roomPin) return alert("Digite seu nome e o PIN da sala!");
+    const roomRef = doc(db, "rooms", roomPin);
+    const roomSnap = await getDoc(roomRef);
+
+    if (!roomSnap.exists()) return alert("Sala não encontrada!");
+    const roomData = roomSnap.data();
+    if (roomData.status !== "LOBBY") return alert("O jogo já começou!");
+
+    const newPlayer = { id: Math.random().toString(), name: studentName, score: 0 };
+    const updatedPlayers = [...roomData.players, newPlayer];
+
+    await updateDoc(roomRef, { players: updatedPlayers });
+    setCurrentRoom(roomData);
+
+    // Carrega o quiz correspondente
+    const quizDoc = await getDoc(doc(db, "quizzes", roomData.quizId));
+    if (quizDoc.exists()) {
+      setSelectedQuiz({ id: quizDoc.id, ...quizDoc.data() });
+    }
+
+    setScreen("student-waiting");
+
+    // Monitora o início da partida pelo professor
+    onSnapshot(roomRef, (snapshot) => {
+      const data = snapshot.data();
+      if (data && data.status === "PLAYING") {
+        startGamePlay();
+      }
+    });
+  };
+
+  const startRoomGame = async () => {
+    await updateDoc(doc(db, "rooms", roomPin), { status: "PLAYING" });
+    setScreen("teacher-ranking");
+    listenRoomRanking();
+  };
+
+  const listenRoomRanking = () => {
+    onSnapshot(doc(db, "rooms", roomPin), (docSnap) => {
+      if (docSnap.exists()) {
+        setPlayersList(docSnap.data().players || []);
+      }
+    });
+  };
+
+  // ==========================================
+  // FLUXO DE JOGO DO ALUNO
+  // ==========================================
+  const startGamePlay = () => {
+    setCurrentQIndex(0);
+    setScore(0);
+    setTimeLeft(selectedQuiz.rules.time);
+    setGameActive(true);
+    setScreen("game-play");
+  };
+
+  const handleAnswer = async (index: number) => {
+    setGameActive(false);
+    const q = selectedQuiz.questions[currentQIndex];
+    let newScore = score;
+
+    if (index === q.correct) {
+      if (!selectedQuiz.rules.noPoints) {
+        const base = q.isBonus ? selectedQuiz.rules.bonusPoints : selectedQuiz.rules.points;
+        const bonusTime = timeLeft * 2;
+        newScore += (base + bonusTime);
+        setScore(newScore);
+      }
+      confetti({ particleCount: 100, spread: 70 });
+    }
+
+    // Atualiza pontuação em tempo real na nuvem do Firebase
+    if (roomPin) {
+      const roomRef = doc(db, "rooms", roomPin);
+      const roomSnap = await getDoc(roomRef);
+      if (roomSnap.exists()) {
+        const players = roomSnap.data().players || [];
+        const updated = players.map((p: any) => p.name === studentName ? { ...p, score: newScore } : p);
+        await updateDoc(roomRef, { players: updated });
       }
     }
-  };
 
-  // Iniciar o jogo com um quiz específico
-  const iniciarQuiz = (quiz: Quiz) => {
-    if (!quiz.perguntas || quiz.perguntas.length === 0) {
-      alert("Este quiz não tem perguntas cadastradas!");
-      return;
-    }
-    setQuizSelecionado(quiz);
-    setIndicePergunta(0);
-    setPontos(0);
-    setFeedback("");
-    setFimDoJogo(false);
-    setTelaAtual("jogando");
-  };
-
-  // Verificar resposta do aluno
-  const responder = (indexOpcao: number) => {
-    if (!quizSelecionado) return;
-    const perguntaAtual = quizSelecionado.perguntas[indicePergunta];
-
-    if (indexOpcao === perguntaAtual.correta) {
-      confetti({ particleCount: 150, spread: 80, origin: { y: 0.5 } });
-      setPontos(pontos + 100);
-      setFeedback("🎉 UAU! VOCÊ ACERTOU! 🌟");
-    } else {
-      setAnimarErro(true);
-      setTimeout(() => setAnimarErro(false), 500);
-      setFeedback("🙈 Ops! Tente na próxima!");
-    }
-
-    // Avança para a próxima pergunta ou encerra após 1.5 segundos
     setTimeout(() => {
-      setFeedback("");
-      if (indicePergunta + 1 < quizSelecionado.perguntas.length) {
-        setIndicePergunta(indicePergunta + 1);
+      if (currentQIndex < selectedQuiz.questions.length - 1) {
+        setCurrentQIndex(currentQIndex + 1);
+        setTimeLeft(selectedQuiz.rules.time);
+        setGameActive(true);
       } else {
-        setFimDoJogo(true);
+        setScreen("game-finished");
+      }
+    }, 1500);
+  };
+
+  const handleTimeOut = () => {
+    setGameActive(false);
+    setTimeout(() => {
+      if (currentQIndex < selectedQuiz.questions.length - 1) {
+        setCurrentQIndex(currentQIndex + 1);
+        setTimeLeft(selectedQuiz.rules.time);
+        setGameActive(true);
+      } else {
+        setScreen("game-finished");
       }
     }, 1500);
   };
 
   return (
     <div style={{
-      maxWidth: "800px",
-      margin: "0 auto",
-      padding: "20px",
-      fontFamily: "'Fredoka', sans-serif",
-      textAlign: "center"
-    }} className={animarErro ? "anim-shake" : ""}>
+      backgroundColor: isDarkMode ? "#1F2937" : "#BAE6FD",
+      color: isDarkMode ? "#F3F4F6" : "#1F2937",
+      minHeight: "100vh", padding: "20px", fontSize, fontFamily: "sans-serif",
+      textTransform: isUppercase ? "uppercase" : "none"
+    }}>
+      <div style={{ maxWidth: "800px", margin: "0 auto", paddingBottom: "60px" }}>
 
-      {/* ESTILOS INTERNOS RÁPIDOS */}
-      <style jsx global>{`
-        @keyframes happyBounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
-        @keyframes sadShake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-10px); } 75% { transform: translateX(10px); } }
-        .anim-shake { animation: sadShake 0.4s ease; }
-        .btn-ludico {
-          background-color: #8B5CF6; color: white; padding: 15px 20px;
-          border: none; border-radius: 16px; cursor: pointer; font-weight: 600;
-          width: 100%; margin-bottom: 15px; font-size: 1.2rem;
-          box-shadow: 0 6px 0 #7C3AED; transition: all 0.1s;
-        }
-        .btn-ludico:active { transform: translateY(6px); box-shadow: 0 0 0 transparent; }
-        .card-ludico {
-          background: #FFFFFF; padding: 30px; border-radius: 24px;
-          box-shadow: 0 10px 0 rgba(0, 0, 0, 0.1); border: 4px solid #FFF; margin-bottom: 20px;
-        }
-      `}</style>
+        {/* TELA INICIAL */}
+        {screen === "home" && (
+          <div style={cardStyle(isDarkMode)}>
+            <h1 style={{ color: "#7C3AED", textAlign: "center", fontSize: "2.5rem" }}>🌟 EduPlay Quiz 🌟</h1>
+            <p style={{ textAlign: "center", fontSize: "1.2rem" }}>Aprender divertindo é muito mais legal!</p>
+            <div style={{ textAlign: "center", fontSize: "4rem", margin: "20px 0" }}>🚀</div>
+            <button style={btnStyle("#10B981")} onClick={() => setScreen("student-join")}>🎮 ENTRAR PARA JOGAR</button>
+            <button style={btnStyle("#6366F1")} onClick={() => setScreen("teacher-menu")}>👩‍🏫 ÁREA DO PROFESSOR</button>
+          </div>
+        )}
 
-      {/* TELA 1: MENU INICIAL */}
-      {telaAtual === "home" && (
-        <div className="card-ludico">
-          <h1 style={{ color: "#8B5CF6", fontSize: "2.5rem" }}>🌟 EduPlay 🌟</h1>
-          <p style={{ fontSize: "1.3rem", color: "#4B5563" }}>Aprender brincando é muito mais legal!</p>
-          <div style={{ fontSize: "6rem", margin: "30px 0" }}>🚀</div>
-          
-          <button className="btn-ludico" style={{ backgroundColor: "#F59E0B", boxShadow: "0 6px 0 #D97706", fontSize: "1.4rem" }} onClick={() => setTelaAtual("selecionar-quiz")}>
-            🎮 VOU JOGAR!
-          </button>
-          
-          <button className="btn-ludico" style={{ backgroundColor: "#3B82F6", boxShadow: "0 6px 0 #2563EB" }} onClick={() => setTelaAtual("professor")}>
-            👩‍🏫 Área do Professor
-          </button>
-        </div>
-      )}
+        {/* ÁREA DO ALUNO - ENTRAR NA SALA */}
+        {screen === "student-join" && (
+          <div style={cardStyle(isDarkMode)}>
+            <h2>Entrar na Sala do Professor</h2>
+            <label>Seu Nome ou Apelido:</label>
+            <input type="text" style={inputStyle(isDarkMode)} value={studentName} onChange={e => setStudentName(e.target.value)} placeholder="Ex: Pedrinho" />
+            <label>PIN da Sala:</label>
+            <input type="text" style={inputStyle(isDarkMode)} value={roomPin} onChange={e => setRoomPin(e.target.value)} placeholder="Ex: 4321" />
+            <button style={btnStyle("#10B981")} onClick={joinRoom}>Entrar na Aventura ✨</button>
+            <button style={btnStyle("#6B7280")} onClick={() => setScreen("home")}>Voltar</button>
+          </div>
+        )}
 
-      {/* TELA 2: ALUNO - SELECIONAR QUIZ */}
-      {telaAtual === "selecionar-quiz" && (
-        <div className="card-ludico">
-          <button className="btn-ludico" style={{ backgroundColor: "#6B7280", boxShadow: "0 6px 0 #4B5563", marginBottom: "20px" }} onClick={() => setTelaAtual("home")}>
-            ⬅ Voltar ao Menu
-          </button>
-          <h2 style={{ color: "#8B5CF6" }}>Escolha um Quiz para Jogar! 🎒</h2>
-          
-          {carregando ? (
-            <p>Buscando os desafios na nuvem...</p>
-          ) : quizzes.length === 0 ? (
-            <p style={{ color: "#6B7280" }}>Nenhum quiz cadastrado pelo professor ainda.</p>
-          ) : (
-            quizzes.map((q) => (
-              <div key={q.id} style={{ background: "#F3F4F6", padding: "20px", borderRadius: "16px", marginBottom: "15px", display: "flex", justifyContent: "space-between", alignItems: "center", border: "3px solid #E5E7EB" }}>
-                <h3 style={{ margin: 0, color: "#1F2937", fontSize: "1.2rem" }}>{q.titulo}</h3>
-                <button className="btn-ludico" style={{ width: "auto", margin: 0, padding: "10px 20px" }} onClick={() => iniciarQuiz(q)}>
-                  ▶ Jogar
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-      )}
+        {/* LOBBY DE ESPERA DO ALUNO */}
+        {screen === "student-waiting" && (
+          <div style={cardStyle(isDarkMode)}>
+            <h2>Tudo Pronto, Herói! 🦸‍♂️</h2>
+            <p style={{ textAlign: "center" }}>Você entrou na sala. Olhe para a tela do professor e aguarde o jogo começar!</p>
+            <div style={{ textAlign: "center", fontSize: "3rem", margin: "30px 0" }}>⏳</div>
+          </div>
+        )}
 
-      {/* TELA 3: ALUNO - JOGANDO */}
-      {telaAtual === "jogando" && quizSelecionado && (
-        <div className="card-ludico">
-          {!fimDoJogo ? (
-            <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-                <span style={{ fontWeight: "bold", color: "#8B5CF6", fontSize: "1.2rem" }}>{quizSelecionado.titulo}</span>
-                <span style={{ background: "#FEF3C7", color: "#D97706", padding: "8px 15px", borderRadius: "20px", fontWeight: "bold", border: "2px solid #FDE68A" }}>⭐ {pontos} Pts</span>
-              </div>
-
-              <h3 style={{ fontSize: "1.8rem", color: "#1F2937", margin: "30px 0" }}>
-                {quizSelecionado.perguntas[indicePergunta].pergunta}
-              </h3>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "15px" }}>
-                {quizSelecionado.perguntas[indicePergunta].opcoes.map((opcao, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => responder(idx)}
-                    style={{
-                      backgroundColor: "#F9FAFB", color: "#1F2937", border: "4px solid #E5E7EB",
-                      padding: "20px", borderRadius: "20px", fontSize: "1.2rem", cursor: "pointer",
-                      fontWeight: 600, fontFamily: "'Fredoka', sans-serif"
-                    }}
-                  >
-                    {opcao}
-                  </button>
-                ))}
-              </div>
-
-              <div style={{ marginTop: "25px", fontSize: "1.5rem", fontWeight: "bold", minHeight: "40px" }}>
-                {feedback}
-              </div>
-            </>
-          ) : (
-            <div>
-              <h2 style={{ color: "#8B5CF6", fontSize: "2.5rem" }}>🏆 Fim do Jogo! 🏆</h2>
-              <p style={{ fontSize: "1.5rem", color: "#4B5563" }}>Você terminou o desafio com:</p>
-              <div style={{ fontSize: "3rem", color: "#D97706", fontWeight: "bold", margin: "20px 0" }}>⭐ {pontos} Pontos!</div>
-              
-              <button className="btn-ludico" style={{ backgroundColor: "#10B981", boxShadow: "0 6px 0 #059669" }} onClick={() => setTelaAtual("selecionar-quiz")}>
-                Jogar Outro Quiz 🎮
-              </button>
-              <button className="btn-ludico" style={{ backgroundColor: "#6B7280", boxShadow: "0 6px 0 #4B5563" }} onClick={() => setTelaAtual("home")}>
-                Voltar ao Menu Inicial 🏠
-              </button>
+        {/* JOGANDO O QUIZ (ALUNO) */}
+        {screen === "game-play" && selectedQuiz && (
+          <div style={cardStyle(isDarkMode)}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold" }}>
+              <span>Pergunta {currentQIndex + 1} de {selectedQuiz.questions.length}</span>
+              {!selectedQuiz.rules.noPoints && <span style={{ color: "#D97706" }}>⭐ {score} Pts</span>}
             </div>
-          )}
-        </div>
-      )}
 
-      {/* TELA 4: ÁREA DO PROFESSOR (CRUD) */}
-      {telaAtual === "professor" && (
-        <div className="card-ludico">
-          <button className="btn-ludico" style={{ backgroundColor: "#6B7280", boxShadow: "0 6px 0 #4B5563", marginBottom: "20px" }} onClick={() => setTelaAtual("home")}>
-            ⬅ Voltar ao Menu
-          </button>
-          
-          <h2 style={{ color: "#8B5CF6" }}>✏️ Criar Novo Quiz</h2>
-          
-          <form onSubmit={salvarQuiz} style={{ background: "#F9FAFB", padding: "20px", borderRadius: "20px", border: "4px solid #E5E7EB", textAlign: "left" }}>
-            <label style={{ fontWeight: "bold" }}>Título do Quiz:</label>
-            <input type="text" value={tituloQuiz} onChange={(e) => setTituloQuiz(e.target.value)} placeholder="Ex: Ciências - Animais" required style={{ width: "100%", padding: "15px", marginBottom: "15px", borderRadius: "10px", border: "2px solid #D1D5DB" }} />
+            <div style={{ background: "#FEE2E2", color: "#EF4444", padding: "10px", borderRadius: "10px", textAlign: "center", fontSize: "1.3rem", fontWeight: "bold", margin: "15px 0" }}>
+              ⏱ Tempo Restante: {timeLeft}s
+            </div>
 
-            <h3 style={{ color: "#F59E0B" }}>Pergunta 1</h3>
-            <input type="text" value={pergunta} onChange={(e) => setPergunta(e.target.value)} placeholder="Digite a pergunta..." required style={{ width: "100%", padding: "15px", marginBottom: "15px", borderRadius: "10px", border: "2px solid #D1D5DB" }} />
-            
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "15px" }}>
-              {[0, 1, 2, 3].map((index) => (
-                <input key={index} type="text" value={opcoes[index]} onChange={(e) => {
-                    const novasOpcoes = [...opcoes];
-                    novasOpcoes[index] = e.target.value;
-                    setOpcoes(novasOpcoes);
-                  }} placeholder={`Alternativa ${index + 1}`} required style={{ padding: "10px", borderRadius: "8px", border: "2px solid #D1D5DB" }} />
+            {selectedQuiz.questions[currentQIndex].isBonus && !selectedQuiz.rules.noPoints && (
+              <div style={{ background: "#FEF08A", color: "#854D0E", padding: "10px", borderRadius: "10px", textAlign: "center", fontWeight: "bold", marginBottom: "15px" }}>
+                ⚡ ATENÇÃO! ESTA PERGUNTA VALE O DOBRO! ⚡
+              </div>
+            )}
+
+            <h3 style={{ fontSize: "1.5rem", textAlign: "center", margin: "20px 0" }}>
+              {selectedQuiz.questions[currentQIndex].question}
+            </h3>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "15px" }}>
+              {selectedQuiz.questions[currentQIndex].options.map((opt: string, idx: number) => (
+                <button key={idx} style={{
+                  padding: "20px", fontSize: "1.1rem", fontWeight: "bold", borderRadius: "15px",
+                  border: "3px solid #D1D5DB", background: isDarkMode ? "#374151" : "#F3F4F6", color: isDarkMode ? "#FFF" : "#000", cursor: "pointer"
+                }} onClick={() => handleAnswer(idx)}>
+                  {String.fromCharCode(65 + idx)}) {opt}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* TELA DE FIM DO JOGO / PÓDIO */}
+        {screen === "game-finished" && (
+          <div style={cardStyle(isDarkMode)}>
+            <h2>🎉 Fim do Desafio! 🎉</h2>
+            <p style={{ textAlign: "center", fontSize: "1.3rem" }}>Você concluiu todas as perguntas com sucesso!</p>
+            {!selectedQuiz?.rules.noPoints && <h3 style={{ color: "#D97706", textAlign: "center" }}>Sua Pontuação Final: {score} Pontos</h3>}
+            <button style={btnStyle("#10B981")} onClick={() => setScreen("home")}>Voltar ao Início</button>
+          </div>
+        )}
+
+        {/* ÁREA DO PROFESSOR - MENU */}
+        {screen === "teacher-menu" && (
+          <div style={cardStyle(isDarkMode)}>
+            <h2>Painel do Professor 📚</h2>
+            <button style={btnStyle("#7C3AED")} onClick={() => { resetForm(); setScreen("teacher-form"); }}>➕ Criar Novo Quiz</button>
+            <button style={btnStyle("#3B82F6")} onClick={() => { fetchQuizzes(); setScreen("teacher-list-host"); }}>📺 Hospedar Jogo ao Vivo</button>
+            <button style={btnStyle("#6B7280")} onClick={() => setScreen("home")}>Voltar ao Menu Principal</button>
+          </div>
+        )}
+
+        {/* LISTA PARA HOSPEDAR SALA */}
+        {screen === "teacher-list-host" && (
+          <div style={cardStyle(isDarkMode)}>
+            <h2>Escolha o Quiz para Hospedar</h2>
+            {quizzes.length === 0 ? <p>Nenhum quiz cadastrado ainda.</p> : quizzes.map(q => (
+              <div key={q.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px", borderBottom: "1px solid #ddd" }}>
+                <span><strong>{q.title}</strong> ({q.questions?.length || 0} perguntas)</span>
+                <button style={{ ...btnStyle("#10B981"), width: "auto", padding: "10px 15px", margin: 0 }} onClick={() => hostRoom(q)}>Abrir Sala 🎮</button>
+              </div>
+            ))}
+            <button style={{ ...btnStyle("#6B7280"), marginTop: "20px" }} onClick={() => setScreen("teacher-menu")}>Voltar</button>
+          </div>
+        )}
+
+        {/* LOBBY DO PROFESSOR (MOSTRAR PIN E ALUNOS) */}
+        {screen === "teacher-lobby" && (
+          <div style={cardStyle(isDarkMode)}>
+            <h2>Sala Aberta com Sucesso! 🎉</h2>
+            <p style={{ textAlign: "center" }}>Passe este Código Mágico para os alunos:</p>
+            <div style={{ fontSize: "3.5rem", fontWeight: "bold", textAlign: "center", color: "#7C3AED", background: "#EDE9FE", padding: "20px", borderRadius: "20px", letterSpacing: "8px" }}>
+              {roomPin}
+            </div>
+
+            <h3 style={{ marginTop: "25px" }}>Alunos Conectados ({playersList.length}):</h3>
+            <div style={{ minHeight: "80px", border: "3px dashed #D1D5DB", padding: "15px", borderRadius: "15px", textAlign: "center" }}>
+              {playersList.length === 0 ? "Aguardando alunos entrarem..." : playersList.map((p, i) => (
+                <span key={i} style={{ display: "inline-block", background: "#F59E0B", color: "#FFF", padding: "8px 15px", borderRadius: "20px", fontWeight: "bold", margin: "5px" }}>{p.name}</span>
               ))}
             </div>
 
-            <label style={{ fontWeight: "bold" }}>Qual é a certa?</label>
-            <select value={correta} onChange={(e) => setCorreta(e.target.value)} style={{ width: "100%", padding: "15px", marginBottom: "20px", borderRadius: "10px", border: "2px solid #D1D5DB" }}>
-              <option value="0">Alternativa 1</option>
-              <option value="1">Alternativa 2</option>
-              <option value="2">Alternativa 3</option>
-              <option value="3">Alternativa 4</option>
-            </select>
+            <button style={{ ...btnStyle("#10B981"), marginTop: "20px" }} onClick={startRoomGame}>▶ INICIAR JOGO PARA TODOS</button>
+            <button style={btnStyle("#EF4444")} onClick={() => setScreen("teacher-menu")}>Cancelar Sala</button>
+          </div>
+        )}
 
-            <button type="submit" className="btn-ludico" style={{ margin: 0 }}>💾 Salvar no Firebase</button>
-          </form>
+        {/* RANKING EM TEMPO REAL (TELA DO PROFESSOR) */}
+        {screen === "teacher-ranking" && (
+          <div style={cardStyle(isDarkMode)}>
+            <h2>🏆 Pódio e Ranking ao Vivo 🏆</h2>
+            <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "15px" }}>
+              <thead>
+                <tr style={{ background: "#7C3AED", color: "#FFF" }}>
+                  <th style={{ padding: "10px", textAlign: "left" }}>Posição</th>
+                  <th style={{ padding: "10px", textAlign: "left" }}>Aluno</th>
+                  <th style={{ padding: "10px", textAlign: "left" }}>Pontuação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {playersList.sort((a,b) => b.score - a.score).map((p, idx) => (
+                  <tr key={idx} style={{ borderBottom: "1px solid #ddd" }}>
+                    <td style={{ padding: "10px" }}>{idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : "👏"} {idx + 1}º</td>
+                    <td style={{ padding: "10px" }}>{p.name}</td>
+                    <td style={{ padding: "10px", fontWeight: "bold", color: "#D97706" }}>⭐ {p.score} pts</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <button style={{ ...btnStyle("#6B7280"), marginTop: "25px" }} onClick={() => setScreen("teacher-menu")}>Encerrar e Voltar</button>
+          </div>
+        )}
 
-          <h2 style={{ marginTop: "40px", color: "#8B5CF6" }}>Meus Quizzes Salvos</h2>
-          {carregando ? (
-            <p>Carregando banco de dados...</p>
-          ) : quizzes.length === 0 ? (
-            <p style={{ color: "#6B7280" }}>Nenhum quiz encontrado.</p>
-          ) : (
-            quizzes.map((quiz) => (
-              <div key={quiz.id} style={{ background: "#F3F4F6", padding: "15px", borderRadius: "15px", marginBottom: "15px", display: "flex", justifyContent: "space-between", alignItems: "center", border: "3px solid #E5E7EB" }}>
-                <h3 style={{ margin: 0, color: "#1F2937", fontSize: "1.2rem" }}>{quiz.titulo}</h3>
-                <button onClick={() => deletarQuiz(quiz.id)} style={{ background: "#EF4444", color: "white", border: "none", padding: "10px 15px", borderRadius: "10px", cursor: "pointer", fontWeight: "bold" }}>
-                  🗑️ Excluir
-                </button>
+        {/* FORMULÁRIO DE CRIAÇÃO / EDIÇÃO DE QUIZ */}
+        {screen === "teacher-form" && (
+          <div style={cardStyle(isDarkMode)}>
+            <h2>{quizId ? "Editar Quiz" : "Criar Novo Quiz"}</h2>
+            <form onSubmit={saveQuiz}>
+              <label>Título do Quiz:</label>
+              <input type="text" style={inputStyle(isDarkMode)} value={quizTitle} onChange={e => setQuizTitle(e.target.value)} placeholder="Ex: Ciências - O Corpo Humano" required />
+
+              <h3>⚙️ Regras do Quiz</h3>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                <div>
+                  <label>Tempo por pergunta (seg):</label>
+                  <input type="number" style={inputStyle(isDarkMode)} value={ruleTime} onChange={e => setRuleTime(Number(e.target.value))} />
+                </div>
+                <div>
+                  <label>Pontos por acerto:</label>
+                  <input type="number" style={inputStyle(isDarkMode)} value={rulePoints} onChange={e => setRulePoints(Number(e.target.value))} />
+                </div>
+                <div>
+                  <label>Pontos Pergunta Bônus:</label>
+                  <input type="number" style={inputStyle(isDarkMode)} value={ruleBonus} onChange={e => setRuleBonus(Number(e.target.value))} />
+                </div>
+                <div>
+                  <label>Modo sem competição:</label>
+                  <select style={inputStyle(isDarkMode)} value={ruleNoPoints ? "true" : "false"} onChange={e => setRuleNoPoints(e.target.value === "true")}>
+                    <option value="false">Não (Com Pontuação)</option>
+                    <option value="true">Sim (Apenas Aprendizado)</option>
+                  </select>
+                </div>
               </div>
-            ))
-          )}
+
+              <h3>❓ Perguntas</h3>
+              {questions.map((q, qIndex) => (
+                <div key={qIndex} style={{ border: "2px solid #D1D5DB", padding: "15px", borderRadius: "12px", marginBottom: "15px" }}>
+                  <h4>Pergunta {qIndex + 1}</h4>
+                  <input type="text" style={inputStyle(isDarkMode)} value={q.question} onChange={e => updateQuestion(qIndex, "question", e.target.value)} placeholder="Texto da pergunta..." required />
+                  
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                    {q.options.map((opt, optIndex) => (
+                      <input key={optIndex} type="text" style={inputStyle(isDarkMode)} value={opt} onChange={e => updateOption(qIndex, optIndex, e.target.value)} placeholder={`Opção ${String.fromCharCode(65 + optIndex)}`} required />
+                    ))}
+                  </div>
+
+                  <label>Alternativa Correta:</label>
+                  <select style={inputStyle(isDarkMode)} value={q.correct} onChange={e => updateQuestion(qIndex, "correct", e.target.value)}>
+                    <option value={0}>Opção A</option>
+                    <option value={1}>Opção B</option>
+                    <option value={2}>Opção C</option>
+                    <option value={3}>Opção D</option>
+                  </select>
+
+                  <label style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <input type="checkbox" checked={q.isBonus} onChange={e => updateQuestion(qIndex, "isBonus", e.target.checked)} />
+                    Marcar como Pergunta Bônus (Vale o Dobro)
+                  </label>
+
+                  {questions.length > 1 && (
+                    <button type="button" style={{ ...btnStyle("#EF4444"), marginTop: "10px", padding: "8px" }} onClick={() => removeQuestionField(qIndex)}>Remover Pergunta</button>
+                  )}
+                </div>
+              ))}
+
+              <button type="button" style={btnStyle("#3B82F6")} onClick={addQuestionField}>+ Adicionar Outra Pergunta</button>
+              <button type="submit" style={btnStyle("#10B981")}>Salvar Quiz Completo 💾</button>
+              <button type="button" style={btnStyle("#6B7280")} onClick={() => setScreen("teacher-menu")}>Cancelar</button>
+            </form>
+          </div>
+        )}
+
+      </div>
+
+      {/* BOTÃO FLUTUANTE DE ACESSIBILIDADE */}
+      <button onClick={() => setAccessMenuOpen(!accessMenuOpen)} style={{
+        position: "fixed", bottom: "20px", right: "20px", width: "55px", height: "55px",
+        borderRadius: "50%", background: "#7C3AED", color: "#FFF", fontSize: "24px", border: "none", cursor: "pointer", zIndex: 1000
+      }}>♿</button>
+
+      {accessMenuOpen && (
+        <div style={{
+          position: "fixed", bottom: "85px", right: "20px", background: isDarkMode ? "#374151" : "#FFF",
+          border: "2px solid #D1D5DB", padding: "15px", borderRadius: "15px", zIndex: 1000, width: "220px", boxShadow: "0 5px 15px rgba(0,0,0,0.2)"
+        }}>
+          <h4 style={{ marginTop: 0 }}>Acessibilidade</h4>
+          <button style={{ ...btnStyle("#3B82F6"), fontSize: "0.9rem", padding: "8px" }} onClick={() => setFontSize("1.3rem")}>A+ Aumentar Letras</button>
+          <button style={{ ...btnStyle("#3B82F6"), fontSize: "0.9rem", padding: "8px" }} onClick={() => setFontSize("1.1rem")}>A- Letra Normal</button>
+          <button style={{ ...btnStyle("#6366F1"), fontSize: "0.9rem", padding: "8px" }} onClick={() => setIsUppercase(!isUppercase)}>🔤 Alternar Maiúsculas</button>
+          <button style={{ ...btnStyle("#1F2937"), fontSize: "0.9rem", padding: "8px" }} onClick={() => setIsDarkMode(!isDarkMode)}>🌙 Modo Escuro</button>
         </div>
       )}
-
     </div>
   );
+}
+
+// Utilitários de Estilização em Linha
+function cardStyle(dark: boolean) {
+  return {
+    background: dark ? "#374151" : "#FFFFFF",
+    padding: "30px", borderRadius: "24px", boxShadow: "0 10px 25px rgba(0,0,0,0.1)",
+    border: "4px solid #FFF", marginBottom: "20px"
+  };
+}
+
+function btnStyle(color: string) {
+  return {
+    backgroundColor: color, color: "#FFFFFF", padding: "15px", border: "none",
+    borderRadius: "16px", cursor: "pointer", fontWeight: "bold", width: "100%",
+    fontSize: "1.1rem", marginTop: "10px", boxShadow: "0 4px 0 rgba(0,0,0,0.2)"
+  };
+}
+
+function inputStyle(dark: boolean) {
+  return {
+    width: "100%", padding: "12px", border: "3px solid #D1D5DB", borderRadius: "10px",
+    marginBottom: "15px", fontSize: "1rem", background: dark ? "#1F2937" : "#FFF", color: dark ? "#FFF" : "#000", boxSizing: "border-box" as const
+  };
 }
