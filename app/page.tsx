@@ -13,14 +13,12 @@ import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 
 export default function EduPlayApp() {
-  // Estados de Navegação e Configurações
   const [screen, setScreen] = useState("home");
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isUppercase, setIsUppercase] = useState(false);
   const [fontSize, setFontSize] = useState("1.1rem");
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
 
-  // Estados de Dados (Quizzes e Salas)
   const [quizzes, setQuizzes] = useState<any[]>([]);
   const [selectedQuiz, setSelectedQuiz] = useState<any>(null);
   
@@ -35,10 +33,9 @@ export default function EduPlayApp() {
     { question: "", options: ["", "", "", ""], correct: 0, isBonus: false }
   ]);
 
-  // Estados do Aluno / Multiplayer (Salas em Tempo Real)
+  // Estados do Aluno / Multiplayer
   const [studentName, setStudentName] = useState("");
   const [roomPin, setRoomPin] = useState("");
-  const [currentRoom, setCurrentRoom] = useState<any>(null);
   const [playersList, setPlayersList] = useState<any[]>([]);
   
   // Estados da Gameplay
@@ -47,7 +44,6 @@ export default function EduPlayApp() {
   const [timeLeft, setTimeLeft] = useState(30);
   const [gameActive, setGameActive] = useState(false);
 
-  // Carrega Quizzes do Firestore ao iniciar
   useEffect(() => {
     fetchQuizzes();
   }, []);
@@ -59,6 +55,36 @@ export default function EduPlayApp() {
       setQuizzes(loaded);
     } catch (e) {
       console.error("Erro ao carregar quizzes", e);
+    }
+  };
+
+  // Sintetizador de Áudio (Feedback Sensorial)
+  const playSound = (type: string) => {
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      osc.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      
+      if (type === 'win') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1);
+        gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+      } else {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(300, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 0.2);
+        gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+      }
+    } catch (e) {
+      console.log("Áudio bloqueado pelo navegador até haver interação");
     }
   };
 
@@ -156,7 +182,6 @@ export default function EduPlayApp() {
     setSelectedQuiz(quiz);
     setScreen("teacher-lobby");
 
-    // Ouve conexões de alunos em tempo real
     onSnapshot(doc(db, "rooms", pin), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -178,9 +203,7 @@ export default function EduPlayApp() {
     const updatedPlayers = [...roomData.players, newPlayer];
 
     await updateDoc(roomRef, { players: updatedPlayers });
-    setCurrentRoom(roomData);
 
-    // Carrega o quiz correspondente
     const quizDoc = await getDoc(doc(db, "quizzes", roomData.quizId));
     if (quizDoc.exists()) {
       setSelectedQuiz({ id: quizDoc.id, ...quizDoc.data() });
@@ -188,11 +211,17 @@ export default function EduPlayApp() {
 
     setScreen("student-waiting");
 
-    // Monitora o início da partida pelo professor
+    // Monitora o início da partida e mudanças de status em tempo real
     onSnapshot(roomRef, (snapshot) => {
       const data = snapshot.data();
-      if (data && data.status === "PLAYING") {
-        startGamePlay();
+      if (data) {
+        setPlayersList(data.players || []);
+        if (data.status === "PLAYING") {
+          startGamePlay();
+        } else if (data.status === "CLOSED") {
+          alert("A sala foi encerrada pelo professor.");
+          leaveRoom();
+        }
       }
     });
   };
@@ -200,24 +229,31 @@ export default function EduPlayApp() {
   const startRoomGame = async () => {
     await updateDoc(doc(db, "rooms", roomPin), { status: "PLAYING" });
     setScreen("teacher-ranking");
-    listenRoomRanking();
   };
 
-  const listenRoomRanking = () => {
-    onSnapshot(doc(db, "rooms", roomPin), (docSnap) => {
-      if (docSnap.exists()) {
-        setPlayersList(docSnap.data().players || []);
-      }
-    });
+  const closeRoom = async () => {
+    if (roomPin) {
+      try {
+        await updateDoc(doc(db, "rooms", roomPin), { status: "CLOSED" });
+      } catch (e) {}
+    }
+    leaveRoom();
+  };
+
+  const leaveRoom = () => {
+    setRoomPin("");
+    setStudentName("");
+    setScreen("home");
   };
 
   // ==========================================
   // FLUXO DE JOGO DO ALUNO
   // ==========================================
   const startGamePlay = () => {
+    if (!selectedQuiz || !selectedQuiz.rules) return;
     setCurrentQIndex(0);
     setScore(0);
-    setTimeLeft(selectedQuiz.rules.time);
+    setTimeLeft(selectedQuiz.rules.time || 30);
     setGameActive(true);
     setScreen("game-play");
   };
@@ -228,6 +264,7 @@ export default function EduPlayApp() {
     let newScore = score;
 
     if (index === q.correct) {
+      playSound('win');
       if (!selectedQuiz.rules.noPoints) {
         const base = q.isBonus ? selectedQuiz.rules.bonusPoints : selectedQuiz.rules.points;
         const bonusTime = timeLeft * 2;
@@ -235,23 +272,26 @@ export default function EduPlayApp() {
         setScore(newScore);
       }
       confetti({ particleCount: 100, spread: 70 });
+    } else {
+      playSound('lose');
     }
 
-    // Atualiza pontuação em tempo real na nuvem do Firebase
     if (roomPin) {
-      const roomRef = doc(db, "rooms", roomPin);
-      const roomSnap = await getDoc(roomRef);
-      if (roomSnap.exists()) {
-        const players = roomSnap.data().players || [];
-        const updated = players.map((p: any) => p.name === studentName ? { ...p, score: newScore } : p);
-        await updateDoc(roomRef, { players: updated });
-      }
+      try {
+        const roomRef = doc(db, "rooms", roomPin);
+        const roomSnap = await getDoc(roomRef);
+        if (roomSnap.exists()) {
+          const players = roomSnap.data().players || [];
+          const updated = players.map((p: any) => p.name === studentName ? { ...p, score: newScore } : p);
+          await updateDoc(roomRef, { players: updated });
+        }
+      } catch (e) {}
     }
 
     setTimeout(() => {
       if (currentQIndex < selectedQuiz.questions.length - 1) {
         setCurrentQIndex(currentQIndex + 1);
-        setTimeLeft(selectedQuiz.rules.time);
+        setTimeLeft(selectedQuiz.rules.time || 30);
         setGameActive(true);
       } else {
         setScreen("game-finished");
@@ -261,10 +301,11 @@ export default function EduPlayApp() {
 
   const handleTimeOut = () => {
     setGameActive(false);
+    playSound('lose');
     setTimeout(() => {
       if (currentQIndex < selectedQuiz.questions.length - 1) {
         setCurrentQIndex(currentQIndex + 1);
-        setTimeLeft(selectedQuiz.rules.time);
+        setTimeLeft(selectedQuiz.rules.time || 30);
         setGameActive(true);
       } else {
         setScreen("game-finished");
@@ -310,7 +351,8 @@ export default function EduPlayApp() {
           <div style={cardStyle(isDarkMode)}>
             <h2>Tudo Pronto, Herói! 🦸‍♂️</h2>
             <p style={{ textAlign: "center" }}>Você entrou na sala. Olhe para a tela do professor e aguarde o jogo começar!</p>
-            <div style={{ textAlign: "center", fontSize: "3rem", margin: "30px 0" }}>⏳</div>
+            <div style={{ textAlign: "center", fontSize: "3rem", margin: "20px 0" }}>⏳</div>
+            <button style={btnStyle("#EF4444")} onClick={leaveRoom}>🚪 Sair da Sala</button>
           </div>
         )}
 
@@ -346,6 +388,8 @@ export default function EduPlayApp() {
                 </button>
               ))}
             </div>
+
+            <button style={{ ...btnStyle("#EF4444"), marginTop: "30px" }} onClick={leaveRoom}>🚪 Sair da Sala</button>
           </div>
         )}
 
@@ -400,7 +444,7 @@ export default function EduPlayApp() {
             </div>
 
             <button style={{ ...btnStyle("#10B981"), marginTop: "20px" }} onClick={startRoomGame}>▶ INICIAR JOGO PARA TODOS</button>
-            <button style={btnStyle("#EF4444")} onClick={() => setScreen("teacher-menu")}>Cancelar Sala</button>
+            <button style={btnStyle("#EF4444")} onClick={closeRoom}>Encerrar Sala</button>
           </div>
         )}
 
@@ -426,7 +470,7 @@ export default function EduPlayApp() {
                 ))}
               </tbody>
             </table>
-            <button style={{ ...btnStyle("#6B7280"), marginTop: "25px" }} onClick={() => setScreen("teacher-menu")}>Encerrar e Voltar</button>
+            <button style={{ ...btnStyle("#6B7280"), marginTop: "25px" }} onClick={closeRoom}>Encerrar Sala e Voltar</button>
           </div>
         )}
 
@@ -523,7 +567,6 @@ export default function EduPlayApp() {
   );
 }
 
-// Utilitários de Estilização em Linha
 function cardStyle(dark: boolean) {
   return {
     background: dark ? "#374151" : "#FFFFFF",
