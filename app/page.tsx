@@ -44,11 +44,37 @@ export default function EduPlayApp() {
   const [score, setScore] = useState(0);
   const [timeLeft, setTimeLeft] = useState(30);
   const [gameActive, setGameActive] = useState(false);
-  const [hasAnswered, setHasAnswered] = useState(false); // Trava para evitar múltiplas respostas
+  const [hasAnswered, setHasAnswered] = useState(false);
 
   useEffect(() => {
     fetchQuizzes();
   }, []);
+
+  // Monitor Global da Sala para o Aluno (Garante que se mudou para PLAYING, o jogo abre na hora)
+  useEffect(() => {
+    if (!roomPin) return;
+    const unsubscribe = onSnapshot(doc(db, "rooms", roomPin), async (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setPlayersList(data.players || []);
+
+        if (data.status === "PLAYING" && screen === "student-waiting") {
+          // Busca o quiz caso ainda não esteja carregado
+          if (!selectedQuiz) {
+            const quizDoc = await getDoc(doc(db, "quizzes", data.quizId));
+            if (quizDoc.exists()) {
+              setSelectedQuiz({ id: quizDoc.id, ...quizDoc.data() });
+            }
+          }
+          startGamePlay();
+        } else if (data.status === "CLOSED") {
+          alert("A sala foi encerrada pelo professor.");
+          leaveRoom();
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, [roomPin, screen, selectedQuiz]);
 
   const fetchQuizzes = async () => {
     try {
@@ -85,9 +111,7 @@ export default function EduPlayApp() {
         gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
         osc.start(); osc.stop(audioCtx.currentTime + 0.3);
       }
-    } catch (e) {
-      console.log("Áudio bloqueado pelo navegador até haver interação");
-    }
+    } catch (e) {}
   };
 
   // Cronômetro Regressivo do Jogo
@@ -183,13 +207,6 @@ export default function EduPlayApp() {
     setRoomPin(pin);
     setSelectedQuiz(quiz);
     setScreen("teacher-lobby");
-
-    onSnapshot(doc(db, "rooms", pin), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setPlayersList(data.players || []);
-      }
-    });
   };
 
   const joinRoom = async () => {
@@ -215,20 +232,6 @@ export default function EduPlayApp() {
     }
 
     setScreen("student-waiting");
-
-    // Monitoramento constante e síncrono para os alunos
-    onSnapshot(roomRef, (snapshot) => {
-      const data = snapshot.data();
-      if (data) {
-        setPlayersList(data.players || []);
-        if (data.status === "PLAYING") {
-          startGamePlay();
-        } else if (data.status === "CLOSED") {
-          alert("A sala foi encerrada pelo professor.");
-          leaveRoom();
-        }
-      }
-    });
   };
 
   const startRoomGame = async () => {
@@ -260,6 +263,7 @@ export default function EduPlayApp() {
     setRoomPin("");
     setStudentName("");
     setStudentId("");
+    setSelectedQuiz(null);
     setScreen("home");
   };
 
@@ -267,17 +271,16 @@ export default function EduPlayApp() {
   // FLUXO DE JOGO DO ALUNO
   // ==========================================
   const startGamePlay = () => {
-    if (!selectedQuiz || !selectedQuiz.rules) return;
     setCurrentQIndex(0);
     setScore(0);
-    setTimeLeft(selectedQuiz.rules.time || 30);
+    setTimeLeft(30);
     setHasAnswered(false);
     setGameActive(true);
     setScreen("game-play");
   };
 
   const handleAnswer = async (index: number) => {
-    if (hasAnswered) return; // Impede cliques múltiplos
+    if (hasAnswered || !selectedQuiz) return;
     setHasAnswered(true);
     setGameActive(false);
 
@@ -328,7 +331,7 @@ export default function EduPlayApp() {
     playSound('lose');
 
     setTimeout(() => {
-      if (currentQIndex < selectedQuiz.questions.length - 1) {
+      if (selectedQuiz && currentQIndex < selectedQuiz.questions.length - 1) {
         setCurrentQIndex(currentQIndex + 1);
         setTimeLeft(selectedQuiz.rules.time || 30);
         setHasAnswered(false);
@@ -383,7 +386,7 @@ export default function EduPlayApp() {
         )}
 
         {/* JOGANDO O QUIZ (ALUNO) */}
-        {screen === "game-play" && selectedQuiz && (
+        {screen === "game-play" && selectedQuiz && selectedQuiz.questions && (
           <div style={cardStyle(isDarkMode)}>
             <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold" }}>
               <span>Pergunta {currentQIndex + 1} de {selectedQuiz.questions.length}</span>
@@ -394,18 +397,18 @@ export default function EduPlayApp() {
               ⏱ Tempo Restante: {timeLeft}s
             </div>
 
-            {selectedQuiz.questions[currentQIndex].isBonus && !selectedQuiz.rules.noPoints && (
+            {selectedQuiz.questions[currentQIndex]?.isBonus && !selectedQuiz.rules.noPoints && (
               <div style={{ background: "#FEF08A", color: "#854D0E", padding: "10px", borderRadius: "10px", textAlign: "center", fontWeight: "bold", marginBottom: "15px" }}>
                 ⚡ ATENÇÃO! ESTA PERGUNTA VALE O DOBRO! ⚡
               </div>
             )}
 
             <h3 style={{ fontSize: "1.5rem", textAlign: "center", margin: "20px 0" }}>
-              {selectedQuiz.questions[currentQIndex].question}
+              {selectedQuiz.questions[currentQIndex]?.question}
             </h3>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "15px" }}>
-              {selectedQuiz.questions[currentQIndex].options.map((opt: string, idx: number) => (
+              {selectedQuiz.questions[currentQIndex]?.options.map((opt: string, idx: number) => (
                 <button 
                   key={idx} 
                   disabled={hasAnswered}
