@@ -33,6 +33,10 @@ export default function EduPlayApp() {
     { question: "", options: ["", "", "", ""], correct: 0, isBonus: false }
   ]);
 
+  // Estados de IA para o Professor
+  const [temaIA, setTemaIA] = useState("");
+  const [loadingAI, setLoadingAI] = useState(false);
+
   // Estados do Aluno / Multiplayer
   const [studentId, setStudentId] = useState("");
   const [studentName, setStudentName] = useState("");
@@ -50,7 +54,7 @@ export default function EduPlayApp() {
     fetchQuizzes();
   }, []);
 
-  // Monitor Global da Sala para o Aluno (Garante que se mudou para PLAYING, o jogo abre na hora)
+  // Monitor Global da Sala para o Aluno
   useEffect(() => {
     if (!roomPin) return;
     const unsubscribe = onSnapshot(doc(db, "rooms", roomPin), async (docSnap) => {
@@ -59,7 +63,6 @@ export default function EduPlayApp() {
         setPlayersList(data.players || []);
 
         if (data.status === "PLAYING" && screen === "student-waiting") {
-          // Busca o quiz caso ainda não esteja carregado
           if (!selectedQuiz) {
             const quizDoc = await getDoc(doc(db, "quizzes", data.quizId));
             if (quizDoc.exists()) {
@@ -86,7 +89,6 @@ export default function EduPlayApp() {
     }
   };
 
-  // Sintetizador de Áudio (Feedback Sensorial)
   const playSound = (type: string) => {
     try {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -114,7 +116,6 @@ export default function EduPlayApp() {
     } catch (e) {}
   };
 
-  // Cronômetro Regressivo do Jogo
   useEffect(() => {
     let timer: any;
     if (gameActive && timeLeft > 0 && !hasAnswered) {
@@ -124,6 +125,35 @@ export default function EduPlayApp() {
     }
     return () => clearTimeout(timer);
   }, [timeLeft, gameActive, hasAnswered]);
+
+  // ==========================================
+  // FUNÇÕES DE IA PARA O PROFESSOR
+  // ==========================================
+  const gerarQuizComIA = async () => {
+    if (!temaIA) return alert("Digite um tema para a IA gerar o quiz!");
+    setLoadingAI(true);
+
+    try {
+      const res = await fetch('/api/gerar-quiz', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tema: temaIA })
+      });
+      const data = await res.json();
+
+      if (data.title && data.questions) {
+        setQuizTitle(data.title);
+        setQuestions(data.questions);
+        alert("✨ Quiz gerado com sucesso! Revise e edite as perguntas abaixo se desejar antes de salvar.");
+      } else {
+        alert("Não foi possível gerar o quiz. Tente novamente.");
+      }
+    } catch (e) {
+      alert("Erro de conexão com a IA.");
+    } finally {
+      setLoadingAI(false);
+    }
+  };
 
   // ==========================================
   // FUNÇÕES DO PROFESSOR (CRUD)
@@ -182,6 +212,7 @@ export default function EduPlayApp() {
     setRuleBonus(200);
     setRuleNoPoints(false);
     setQuestions([{ question: "", options: ["", "", "", ""], correct: 0, isBonus: false }]);
+    setTemaIA("");
   };
 
   const deleteQuiz = async (id: string) => {
@@ -192,7 +223,7 @@ export default function EduPlayApp() {
   };
 
   // ==========================================
-  // FUNÇÕES DE SALA E MULTIPLAYER (FIRESTORE)
+  // MULTIPLAYER (FIRESTORE)
   // ==========================================
   const hostRoom = async (quiz: any) => {
     const pin = Math.floor(1000 + Math.random() * 9000).toString();
@@ -362,7 +393,7 @@ export default function EduPlayApp() {
           </div>
         )}
 
-        {/* ÁREA DO ALUNO - ENTRAR NA SALA */}
+        {/* ENTRAR NA SALA */}
         {screen === "student-join" && (
           <div style={cardStyle(isDarkMode)}>
             <h2>Entrar na Sala do Professor</h2>
@@ -375,7 +406,7 @@ export default function EduPlayApp() {
           </div>
         )}
 
-        {/* LOBBY DE ESPERA DO ALUNO */}
+        {/* LOBBY ALUNO */}
         {screen === "student-waiting" && (
           <div style={cardStyle(isDarkMode)}>
             <h2>Tudo Pronto, Herói! 🦸‍♂️</h2>
@@ -385,7 +416,7 @@ export default function EduPlayApp() {
           </div>
         )}
 
-        {/* JOGANDO O QUIZ (ALUNO) */}
+        {/* GAMEPLAY ALUNO */}
         {screen === "game-play" && selectedQuiz && selectedQuiz.questions && (
           <div style={cardStyle(isDarkMode)}>
             <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold" }}>
@@ -429,7 +460,7 @@ export default function EduPlayApp() {
           </div>
         )}
 
-        {/* TELA DE FIM DO JOGO / PÓDIO */}
+        {/* FIM DO JOGO */}
         {screen === "game-finished" && (
           <div style={cardStyle(isDarkMode)}>
             <h2>🎉 Fim do Desafio! 🎉</h2>
@@ -439,7 +470,7 @@ export default function EduPlayApp() {
           </div>
         )}
 
-        {/* ÁREA DO PROFESSOR - MENU */}
+        {/* PAINEL PROFESSOR */}
         {screen === "teacher-menu" && (
           <div style={cardStyle(isDarkMode)}>
             <h2>Painel do Professor 📚</h2>
@@ -449,7 +480,7 @@ export default function EduPlayApp() {
           </div>
         )}
 
-        {/* LISTA PARA HOSPEDAR SALA */}
+        {/* LISTA PARA HOSPEDAR */}
         {screen === "teacher-list-host" && (
           <div style={cardStyle(isDarkMode)}>
             <h2>Escolha o Quiz para Hospedar</h2>
@@ -463,7 +494,7 @@ export default function EduPlayApp() {
           </div>
         )}
 
-        {/* LOBBY DO PROFESSOR (MOSTRAR PIN E ALUNOS) */}
+        {/* LOBBY PROFESSOR */}
         {screen === "teacher-lobby" && (
           <div style={cardStyle(isDarkMode)}>
             <h2>Sala Aberta com Sucesso! 🎉</h2>
@@ -480,11 +511,11 @@ export default function EduPlayApp() {
             </div>
 
             <button style={{ ...btnStyle("#10B981"), marginTop: "20px" }} onClick={startRoomGame}>▶ INICIAR JOGO PARA TODOS</button>
-            <button style={btnStyle("#EF4444")} onClick={closeRoom}>Encerrar Sala</button>
+            <button style={{ ...btnStyle("#EF4444"), marginTop: "10px" }} onClick={closeRoom}>Encerrar Sala</button>
           </div>
         )}
 
-        {/* RANKING EM TEMPO REAL (TELA DO PROFESSOR) */}
+        {/* RANKING AO VIVO */}
         {screen === "teacher-ranking" && (
           <div style={cardStyle(isDarkMode)}>
             <h2>🏆 Pódio e Ranking ao Vivo 🏆</h2>
@@ -510,10 +541,21 @@ export default function EduPlayApp() {
           </div>
         )}
 
-        {/* FORMULÁRIO DE CRIAÇÃO / EDIÇÃO DE QUIZ */}
+        {/* FORMULÁRIO COM SUPORTE A IA */}
         {screen === "teacher-form" && (
           <div style={cardStyle(isDarkMode)}>
             <h2>{quizId ? "Editar Quiz" : "Criar Novo Quiz"}</h2>
+            
+            {/* Bloco de Geração por IA */}
+            <div style={{ background: isDarkMode ? "#4B5563" : "#EDE9FE", padding: "20px", borderRadius: "16px", marginBottom: "25px", border: "2px dashed #7C3AED" }}>
+              <h3 style={{ color: "#7C3AED", marginTop: 0 }}>✨ Criar com Inteligência Artificial</h3>
+              <label>Digite o tema ou matéria (Ex: Frações, Sistema Solar, Animais):</label>
+              <input type="text" style={inputStyle(isDarkMode)} value={temaIA} onChange={e => setTemaIA(e.target.value)} placeholder="Ex: Planetas do Sistema Solar" />
+              <button type="button" style={btnStyle("#7C3AED")} onClick={gerarQuizComIA} disabled={loadingAI}>
+                {loadingAI ? "Gerando perguntas mágicas com IA... 🪄" : "⚡ Gerar Perguntas Automaticamente"}
+              </button>
+            </div>
+
             <form onSubmit={saveQuiz}>
               <label>Título do Quiz:</label>
               <input type="text" style={inputStyle(isDarkMode)} value={quizTitle} onChange={e => setQuizTitle(e.target.value)} placeholder="Ex: Ciências - O Corpo Humano" required />
@@ -541,7 +583,7 @@ export default function EduPlayApp() {
                 </div>
               </div>
 
-              <h3>❓ Perguntas</h3>
+              <h3>❓ Perguntas (Editáveis)</h3>
               {questions.map((q, qIndex) => (
                 <div key={qIndex} style={{ border: "2px solid #D1D5DB", padding: "15px", borderRadius: "12px", marginBottom: "15px" }}>
                   <h4>Pergunta {qIndex + 1}</h4>
@@ -572,7 +614,7 @@ export default function EduPlayApp() {
                 </div>
               ))}
 
-              <button type="button" style={btnStyle("#3B82F6")} onClick={addQuestionField}>+ Adicionar Outra Pergunta</button>
+              <button type="button" style={btnStyle("#3B82F6")} onClick={addQuestionField}>+ Adicionar Outra Pergunta Manualmente</button>
               <button type="submit" style={btnStyle("#10B981")}>Salvar Quiz Completo 💾</button>
               <button type="button" style={btnStyle("#6B7280")} onClick={() => setScreen("teacher-menu")}>Cancelar</button>
             </form>
