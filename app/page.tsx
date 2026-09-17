@@ -33,10 +33,6 @@ export default function EduPlayApp() {
     { question: "", options: ["", "", "", ""], correct: 0, isBonus: false }
   ]);
 
-  // Estados de IA para o Professor
-  const [temaIA, setTemaIA] = useState("");
-  const [loadingAI, setLoadingAI] = useState(false);
-
   // Estados do Aluno / Multiplayer
   const [studentId, setStudentId] = useState("");
   const [studentName, setStudentName] = useState("");
@@ -127,35 +123,6 @@ export default function EduPlayApp() {
   }, [timeLeft, gameActive, hasAnswered]);
 
   // ==========================================
-  // FUNÇÕES DE IA PARA O PROFESSOR
-  // ==========================================
-  const gerarQuizComIA = async () => {
-    if (!temaIA) return alert("Digite um tema para a IA gerar o quiz!");
-    setLoadingAI(true);
-
-    try {
-      const res = await fetch('/api/gerar-quiz', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tema: temaIA })
-      });
-      const data = await res.json();
-
-      if (data.title && data.questions) {
-        setQuizTitle(data.title);
-        setQuestions(data.questions);
-        alert("✨ Quiz gerado com sucesso! Revise e edite as perguntas abaixo se desejar antes de salvar.");
-      } else {
-        alert("Não foi possível gerar o quiz. Tente novamente.");
-      }
-    } catch (e) {
-      alert("Erro de conexão com a IA.");
-    } finally {
-      setLoadingAI(false);
-    }
-  };
-
-  // ==========================================
   // FUNÇÕES DO PROFESSOR (CRUD)
   // ==========================================
   const addQuestionField = () => {
@@ -178,6 +145,17 @@ export default function EduPlayApp() {
 
   const removeQuestionField = (index: number) => {
     setQuestions(questions.filter((_, i) => i !== index));
+  };
+
+  const editQuiz = (quiz: any) => {
+    setQuizId(quiz.id);
+    setQuizTitle(quiz.title);
+    setRuleTime(quiz.rules?.time || 30);
+    setRulePoints(quiz.rules?.points || 100);
+    setRuleBonus(quiz.rules?.bonusPoints || 200);
+    setRuleNoPoints(quiz.rules?.noPoints || false);
+    setQuestions(quiz.questions || []);
+    setScreen("teacher-form");
   };
 
   const saveQuiz = async (e: React.FormEvent) => {
@@ -212,7 +190,6 @@ export default function EduPlayApp() {
     setRuleBonus(200);
     setRuleNoPoints(false);
     setQuestions([{ question: "", options: ["", "", "", ""], correct: 0, isBonus: false }]);
-    setTemaIA("");
   };
 
   const deleteQuiz = async (id: string) => {
@@ -304,7 +281,7 @@ export default function EduPlayApp() {
   const startGamePlay = () => {
     setCurrentQIndex(0);
     setScore(0);
-    setTimeLeft(30);
+    setTimeLeft(selectedQuiz?.rules?.time || 30);
     setHasAnswered(false);
     setGameActive(true);
     setScreen("game-play");
@@ -476,7 +453,25 @@ export default function EduPlayApp() {
             <h2>Painel do Professor 📚</h2>
             <button style={btnStyle("#7C3AED")} onClick={() => { resetForm(); setScreen("teacher-form"); }}>➕ Criar Novo Quiz</button>
             <button style={btnStyle("#3B82F6")} onClick={() => { fetchQuizzes(); setScreen("teacher-list-host"); }}>📺 Hospedar Jogo ao Vivo</button>
+            <button style={btnStyle("#10B981")} onClick={() => { fetchQuizzes(); setScreen("teacher-list-manage"); }}>✏️ Gerenciar / Editar Quizzes</button>
             <button style={btnStyle("#6B7280")} onClick={() => setScreen("home")}>Voltar ao Menu Principal</button>
+          </div>
+        )}
+
+        {/* LISTA PARA GERENCIAR / EDITAR / EXCLUIR */}
+        {screen === "teacher-list-manage" && (
+          <div style={cardStyle(isDarkMode)}>
+            <h2>Gerenciar Quizzes Cadastrados</h2>
+            {quizzes.length === 0 ? <p>Nenhum quiz cadastrado ainda.</p> : quizzes.map(q => (
+              <div key={q.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px", borderBottom: "1px solid #ddd" }}>
+                <span><strong>{q.title}</strong> ({q.questions?.length || 0} perguntas)</span>
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <button style={{ ...btnStyle("#3B82F6"), width: "auto", padding: "8px 12px", margin: 0 }} onClick={() => editQuiz(q)}>Editar ✏️</button>
+                  <button style={{ ...btnStyle("#EF4444"), width: "auto", padding: "8px 12px", margin: 0 }} onClick={() => deleteQuiz(q.id)}>Excluir 🗑️</button>
+                </div>
+              </div>
+            ))}
+            <button style={{ ...btnStyle("#6B7280"), marginTop: "20px" }} onClick={() => setScreen("teacher-menu")}>Voltar</button>
           </div>
         )}
 
@@ -541,21 +536,11 @@ export default function EduPlayApp() {
           </div>
         )}
 
-        {/* FORMULÁRIO COM SUPORTE A IA */}
+        {/* FORMULÁRIO DE CRIAÇÃO / EDIÇÃO MANUAL */}
         {screen === "teacher-form" && (
           <div style={cardStyle(isDarkMode)}>
             <h2>{quizId ? "Editar Quiz" : "Criar Novo Quiz"}</h2>
             
-            {/* Bloco de Geração por IA */}
-            <div style={{ background: isDarkMode ? "#4B5563" : "#EDE9FE", padding: "20px", borderRadius: "16px", marginBottom: "25px", border: "2px dashed #7C3AED" }}>
-              <h3 style={{ color: "#7C3AED", marginTop: 0 }}>✨ Criar com Inteligência Artificial</h3>
-              <label>Digite o tema ou matéria (Ex: Frações, Sistema Solar, Animais):</label>
-              <input type="text" style={inputStyle(isDarkMode)} value={temaIA} onChange={e => setTemaIA(e.target.value)} placeholder="Ex: Planetas do Sistema Solar" />
-              <button type="button" style={btnStyle("#7C3AED")} onClick={gerarQuizComIA} disabled={loadingAI}>
-                {loadingAI ? "Gerando perguntas mágicas com IA... 🪄" : "⚡ Gerar Perguntas Automaticamente"}
-              </button>
-            </div>
-
             <form onSubmit={saveQuiz}>
               <label>Título do Quiz:</label>
               <input type="text" style={inputStyle(isDarkMode)} value={quizTitle} onChange={e => setQuizTitle(e.target.value)} placeholder="Ex: Ciências - O Corpo Humano" required />
@@ -583,7 +568,7 @@ export default function EduPlayApp() {
                 </div>
               </div>
 
-              <h3>❓ Perguntas (Editáveis)</h3>
+              <h3>❓ Perguntas</h3>
               {questions.map((q, qIndex) => (
                 <div key={qIndex} style={{ border: "2px solid #D1D5DB", padding: "15px", borderRadius: "12px", marginBottom: "15px" }}>
                   <h4>Pergunta {qIndex + 1}</h4>
@@ -614,7 +599,7 @@ export default function EduPlayApp() {
                 </div>
               ))}
 
-              <button type="button" style={btnStyle("#3B82F6")} onClick={addQuestionField}>+ Adicionar Outra Pergunta Manualmente</button>
+              <button type="button" style={btnStyle("#3B82F6")} onClick={addQuestionField}>+ Adicionar Outra Pergunta</button>
               <button type="submit" style={btnStyle("#10B981")}>Salvar Quiz Completo 💾</button>
               <button type="button" style={btnStyle("#6B7280")} onClick={() => setScreen("teacher-menu")}>Cancelar</button>
             </form>
